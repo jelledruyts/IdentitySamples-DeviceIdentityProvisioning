@@ -1,15 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Graph;
-using Microsoft.Graph.Auth;
-using Microsoft.Identity.Client;
 
 namespace DeviceIdentityProvisioning.WebApp
 {
@@ -32,7 +29,7 @@ namespace DeviceIdentityProvisioning.WebApp
 
             // Find all applications that have a display name that starts with the device prefix.
             // In real world scenarios, the actual device list would probably be stored and managed separately from Azure AD.
-            var graphService = GetGraphServiceClientOnBehalfOfCurrentUser();
+            var graphService = GraphServiceClientFactory.GetForUserIdentity(this.User);
             var deviceApplicationRegistrations = await graphService.Applications.Request().Filter($"startswith(displayName,'{DeviceDisplayNamePrefix}')").GetAsync();
             this.Devices = deviceApplicationRegistrations.Select(d => new DeviceIdentity(d)).OrderByDescending(d => d.CreatedDateTime).ToArray();
         }
@@ -42,7 +39,7 @@ namespace DeviceIdentityProvisioning.WebApp
             // Generate a unique display name with the prefix so that device identities can be easily retrieved by filtering on that prefix.
             var displayName = $"{DeviceDisplayNamePrefix} {Guid.NewGuid().ToString()}";
             var description = "Created by Device Identity Provisioning Service";
-            var graphService = GetGraphServiceClientOnBehalfOfCurrentUser();
+            var graphService = GraphServiceClientFactory.GetForUserIdentity(this.User);
             await CreateDeviceIdentityAsync(graphService, displayName, description);
             return RedirectToPage();
         }
@@ -50,7 +47,7 @@ namespace DeviceIdentityProvisioning.WebApp
         public async Task<IActionResult> OnPostUseDeviceIdentityAsync(string id)
         {
             // Get the device and its details from Azure AD in this case.
-            var graphService = GetGraphServiceClientOnBehalfOfCurrentUser();
+            var graphService = GraphServiceClientFactory.GetForUserIdentity(this.User);
             var deviceApplicationRegistration = await graphService.Applications[id].Request().GetAsync();
             var deviceIdentity = new DeviceIdentity(deviceApplicationRegistration);
 
@@ -62,27 +59,9 @@ namespace DeviceIdentityProvisioning.WebApp
 
         public async Task<IActionResult> OnPostDeleteDeviceIdentityAsync(string id)
         {
-            var graphService = GetGraphServiceClientOnBehalfOfCurrentUser();
+            var graphService = GraphServiceClientFactory.GetForUserIdentity(this.User);
             await graphService.Applications[id].Request().DeleteAsync();
             return RedirectToPage();
-        }
-
-        private IGraphServiceClient GetGraphServiceClientOnBehalfOfCurrentUser()
-        {
-            // Create an instance of the Graph Service Client to access the Microsoft Graph API.
-            // In real world scenarios, this would use MSAL to fetch the access token based on the currently
-            // signed in user in the web app (optionally using the refresh token if it had expired etc.)
-            // as documented at https://github.com/microsoftgraph/msgraph-sdk-dotnet-auth.
-            // To simplify this sample, we just fetch the access token from the current user's claims to avoid
-            // the complexity of an external token cache (see Startup.cs) and inject that token directly into
-            // the Graph Service Client.
-            var accessTokenClaim = this.User.Claims.Single(c => c.Type == Startup.ClaimTypeAccessToken);
-            var authenticationProvider = new DelegateAuthenticationProvider(requestMessage =>
-            {
-                requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessTokenClaim.Value);
-                return Task.FromResult(0);
-            });
-            return new GraphServiceClient(authenticationProvider);
         }
 
         private async Task<DeviceIdentity> CreateDeviceIdentityAsync(IGraphServiceClient graphService, string displayName, string description)
@@ -170,11 +149,7 @@ namespace DeviceIdentityProvisioning.WebApp
         {
             try
             {
-                var client = ConfidentialClientApplicationBuilder.Create(deviceIdentity.AppId)
-                    .WithTenantId(deviceIdentity.TenantId)
-                    .WithClientSecret(deviceIdentity.ClientSecret)
-                    .Build();
-                var graphService = new GraphServiceClient(new ClientCredentialProvider(client));
+                var graphService = GraphServiceClientFactory.GetForDeviceIdentity(deviceIdentity);
                 var users = await graphService.Users.Request().GetAsync();
                 return $"Successfully retrieved {users.Count} users from the Graph API using the identity of device \"{deviceIdentity.DisplayName}\" in tenant \"{deviceIdentity.TenantId}\", which demonstrates that the device is able to access the Graph API using its provisioned identity.";
             }

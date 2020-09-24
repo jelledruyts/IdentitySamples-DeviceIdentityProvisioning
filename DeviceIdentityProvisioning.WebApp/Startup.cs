@@ -17,6 +17,7 @@ namespace DeviceIdentityProvisioning.WebApp
     {
         public const string ClaimTypeAccessToken = "access_token";
         public const string ClaimTypeRefreshToken = "refresh_token";
+        public static string DeviceIdentityProvisioningAppId { get; private set; }
 
         public Startup(IConfiguration configuration)
         {
@@ -28,6 +29,8 @@ namespace DeviceIdentityProvisioning.WebApp
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
+            DeviceIdentityProvisioningAppId = Configuration.GetValue<string>("AzureAd:ClientId");
+
             // Configure support for the SameSite cookies breaking change.
             services.ConfigureSameSiteCookiePolicy();
 
