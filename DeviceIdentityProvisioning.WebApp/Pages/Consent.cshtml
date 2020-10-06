@@ -3,6 +3,10 @@
 @{
     ViewData["Title"] = "Consent";
 }
+@if (Model.NotificationMessage != null)
+{
+<div class="alert alert-primary">@Model.NotificationMessage</div>
+}
 
 <h4>Revoke Consent</h4>
 <p class="lead">
@@ -11,8 +15,8 @@
     consent for your entire organization. To grant consent again, simply sign back in to this application.
 </p>
 <div class="alert alert-info">
-    Note that this does not impact the provisioned device identities in any way, they remain able to use
-    their identities as before.
+    Note that this does not impact the provisioned device identities in any way, properly configured devices
+    remain able to use their identities as before.
 </div>
 <form method="POST">
     <button type="submit" class="btn btn-warning">Revoke</button>
