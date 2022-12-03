@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
@@ -10,6 +11,8 @@ namespace DeviceIdentityProvisioning.ConsoleApp
 {
     class Program
     {
+        private static readonly TimeSpan WaitPeriod = TimeSpan.FromSeconds(5); // Buffer time for Graph API calls.
+
         static async Task Main(string[] args)
         {
             // Load configuration.
@@ -26,9 +29,14 @@ namespace DeviceIdentityProvisioning.ConsoleApp
             {
                 try
                 {
+                    Console.WriteLine("*** MAIN SCENARIO: Multi-tenant app with interactive user ***");
                     Console.WriteLine("A - Onboard a new customer tenant (optional)");
                     Console.WriteLine("B - Create a new device identity");
                     Console.WriteLine("C - Use the last created device identity");
+                    Console.WriteLine();
+                    Console.WriteLine("*** ALTERNATIVE SCENARIOS ***");
+                    Console.WriteLine("D - Create a device identity from a single-tenant non-interactive provisioning app");
+                    Console.WriteLine();
                     Console.Write("Type your choice and press Enter: ");
                     var choice = Console.ReadLine();
                     Console.WriteLine();
@@ -44,9 +52,18 @@ namespace DeviceIdentityProvisioning.ConsoleApp
                     {
                         if (lastCreatedDeviceIdentity != null)
                         {
-                            var notificationMessage = await CallApiUsingDeviceIdentityAsync(lastCreatedDeviceIdentity);
+                            var notificationMessage = await CallGraphApiUsingDeviceIdentityAsync(lastCreatedDeviceIdentity);
                             Console.WriteLine(notificationMessage);
                         }
+                    }
+                    else if (string.Equals(choice, "D", StringComparison.InvariantCultureIgnoreCase))
+                    {
+                        var tenantId = configuration.GetValue<string>("AzureAd:TenantId");
+                        var deviceIdentityProvisioningAppSecret = configuration.GetValue<string>("AzureAd:ClientSecret");
+                        var targetApiAppId = configuration.GetValue<string>("TargetApi:ClientId");
+                        var targetApiRoleId = configuration.GetValue<string>("TargetApi:RoleId");
+                        var targetApiScope = configuration.GetValue<string>("TargetApi:Scope");
+                        await CreateDeviceIdentityFromProvisioningAppAsync(tenantId, deviceIdentityProvisioningAppId, deviceIdentityProvisioningAppSecret, targetApiAppId, targetApiRoleId, targetApiScope);
                     }
                     else
                     {
@@ -90,49 +107,98 @@ namespace DeviceIdentityProvisioning.ConsoleApp
             var currentOrganization = (await graphService.Organization.Request().GetAsync()).Single();
             var currentTenantId = currentOrganization.Id;
 
+            // Specify which permissions the device will ultimately need.
+            // In this case we use certain Graph API permissions to prove the point but this could be
+            // any Application Permission on any API.
+            var requiredResourceAccess = new[]
+            {
+                new RequiredResourceAccess
+                {
+                    // Request that the device can access the Microsoft Graph API.
+                    ResourceAppId = "00000003-0000-0000-c000-000000000000",
+                    ResourceAccess =  new []
+                    {
+                        // Request an Application Permission (i.e. "Role") for the permission "Calendars.Read".
+                        new ResourceAccess { Type = "Role", Id = new Guid("798ee544-9d2d-430c-a058-570e29e34338") },
+                         // Request an Application Permission (i.e. "Role") for the permission "User.Read.All".
+                        new ResourceAccess { Type = "Role", Id = new Guid("df021288-bdef-4463-88db-98f22de89214") }
+                    }
+                }
+            };
+
+            return await CreateDeviceIdentityAsync(graphService, currentTenantId, requiredResourceAccess);
+        }
+
+        private static async Task CreateDeviceIdentityFromProvisioningAppAsync(string tenantId, string deviceIdentityProvisioningAppId, string deviceIdentityProvisioningAppSecret, string targetApiAppId, string targetApiRoleId, string targetApiScope)
+        {
+            // Create the MSAL confidential client application which has permissions to register device identities,
+            // and is also an owner of the target API so it can perform the required admin consent (without being a
+            // directory admin or otherwise having high-privilege permissions).
+            var client = ConfidentialClientApplicationBuilder.Create(deviceIdentityProvisioningAppId)
+                .WithClientSecret(deviceIdentityProvisioningAppSecret)
+                .WithTenantId(tenantId)
+                .Build();
+            var graphService = new GraphServiceClient(new ClientCredentialProvider(client));
+
+            // Specify which permissions the device will ultimately need.
+            // In this case we have to use a target API which we own (which excludes 3rd party multi-tenant apps
+            // like the Graph API for example).
+            var requiredResourceAccess = new[]
+            {
+                new RequiredResourceAccess
+                {
+                    // Request that the device can access the target API.
+                    ResourceAppId = targetApiAppId,
+                    ResourceAccess =  new []
+                    {
+                        // Request an Application Permission (i.e. "Role") for the required role.
+                        new ResourceAccess { Type = "Role", Id = new Guid(targetApiRoleId) }
+                    }
+                }
+            };
+
+            // Create the device identity.
+            var deviceIdentity = await CreateDeviceIdentityAsync(graphService, tenantId, requiredResourceAccess);
+            await Task.Delay(WaitPeriod); // Safety buffer
+
+            // Acquire a token to prove that everything worked.
+            var accessToken = await GetTokenForDeviceIdentity(deviceIdentity, new[] { targetApiScope });
+            Console.WriteLine($"Acquired token for device identity to call target API: {accessToken}");
+        }
+
+        private static async Task<DeviceIdentity> CreateDeviceIdentityAsync(GraphServiceClient graphService, string tenantId, IEnumerable<RequiredResourceAccess> requiredResourceAccess)
+        {
             // Register an application representing the device.
             var deviceIdentityApplication = new Application
             {
                 DisplayName = $"Device {Guid.NewGuid().ToString()}",
                 Description = "Created by Device Identity Provisioning Service",
                 SignInAudience = "AzureADMyOrg", // Limit exposure of this app registration to the customer tenant
-                RequiredResourceAccess = new[]
-                {
-                    // Specify which permissions the device will ultimately need; in this case we use certain Graph API permissions to prove the point but this could be any Application Permission on any API.
-                    new RequiredResourceAccess
-                    {
-                        ResourceAppId = "00000003-0000-0000-c000-000000000000", // Request that the device can access the Microsoft Graph API
-                        ResourceAccess =  new []
-                        {
-                            new ResourceAccess { Type = "Role", Id = new Guid("798ee544-9d2d-430c-a058-570e29e34338") }, // Request an Application Permission (i.e. "Role") for the permission "Calendars.Read"
-                            new ResourceAccess { Type = "Role", Id = new Guid("df021288-bdef-4463-88db-98f22de89214") }, // Request an Application Permission (i.e. "Role") for the permission "User.Read.All"
-                        }
-                    }
-                }
+                RequiredResourceAccess = requiredResourceAccess
             };
             deviceIdentityApplication = await graphService.Applications.Request().AddAsync(deviceIdentityApplication);
             Console.WriteLine($"Application created for device \"{deviceIdentityApplication.DisplayName}\": App ID = \"{deviceIdentityApplication.AppId}\"");
-            await Task.Delay(1000); // Safety buffer
+            await Task.Delay(WaitPeriod); // Safety buffer
 
             // Create a client credential for the device.
             // https://docs.microsoft.com/en-us/graph/api/application-addpassword?view=graph-rest-1.0&tabs=http
             var clientCredential = await graphService.Applications[deviceIdentityApplication.Id].AddPassword(new PasswordCredential()).Request().PostAsync();
             Console.WriteLine($"Credential created for device: Client Secret = \"{clientCredential.SecretText}\"");
-            await Task.Delay(1000); // Safety buffer
+            await Task.Delay(WaitPeriod); // Safety buffer
 
             // Create the Service Principal for the device's app registration, as this will ultimately receive the required permissions (App Roles).
             var deviceIdentityServicePrincipal = await graphService.ServicePrincipals.Request().AddAsync(new ServicePrincipal { AppId = deviceIdentityApplication.AppId });
             Console.WriteLine($"Service Principal created for device: ID = \"{deviceIdentityApplication.Id}\"");
-            await Task.Delay(1000); // Safety buffer
+            await Task.Delay(WaitPeriod); // Safety buffer
 
-            // Perform an admin consent (i.e. add the App Role Assignment) using the customer tenant admin's privileges for each requested resource access in the device app registration.
-            foreach (var requiredResourceAccess in deviceIdentityApplication.RequiredResourceAccess)
+            // Perform an admin consent (i.e. add the App Role Assignment) for each requested resource access in the device app registration.
+            foreach (var requiredResourceAccessInstance in deviceIdentityApplication.RequiredResourceAccess)
             {
                 // Look up the Service Principal of the Resource AppId in the target tenant.
-                var targetResourceServicePrincipal = (await graphService.ServicePrincipals.Request().Filter($"appId eq '{requiredResourceAccess.ResourceAppId}'").GetAsync()).Single();
+                var targetResourceServicePrincipal = (await graphService.ServicePrincipals.Request().Filter($"appId eq '{requiredResourceAccessInstance.ResourceAppId}'").GetAsync()).Single();
 
                 // Create the App Role Assignment for each requested resource.
-                foreach (var appRole in requiredResourceAccess.ResourceAccess)
+                foreach (var appRole in requiredResourceAccessInstance.ResourceAccess)
                 {
                     var deviceAppRoleAssignment = new AppRoleAssignment
                     {
@@ -142,6 +208,7 @@ namespace DeviceIdentityProvisioning.ConsoleApp
                     };
                     // https://docs.microsoft.com/en-us/graph/api/serviceprincipal-post-approleassignments?view=graph-rest-1.0&tabs=http
                     deviceAppRoleAssignment = await graphService.ServicePrincipals[deviceIdentityServicePrincipal.Id].AppRoleAssignments.Request().AddAsync(deviceAppRoleAssignment);
+                    Console.WriteLine($"Device identity's App Role assigned and consented for target API \"{requiredResourceAccessInstance.ResourceAppId}\" and role ID \"{appRole.Id}\"");
                 }
             }
 
@@ -150,13 +217,13 @@ namespace DeviceIdentityProvisioning.ConsoleApp
                 DisplayName = deviceIdentityApplication.DisplayName,
                 Id = deviceIdentityApplication.Id,
                 AppId = deviceIdentityApplication.AppId,
-                TenantId = currentTenantId,
+                TenantId = tenantId,
                 ClientSecret = clientCredential.SecretText,
                 CreatedDateTime = deviceIdentityApplication.CreatedDateTime
             };
         }
 
-        private static async Task<string> CallApiUsingDeviceIdentityAsync(DeviceIdentity deviceIdentity)
+        private static async Task<string> CallGraphApiUsingDeviceIdentityAsync(DeviceIdentity deviceIdentity)
         {
             try
             {
@@ -172,6 +239,16 @@ namespace DeviceIdentityProvisioning.ConsoleApp
             {
                 return $"Failed to retrieve users from the Graph API using the identity of device \"{deviceIdentity.DisplayName}\" in tenant \"{deviceIdentity.TenantId}\": {exc.Message}.";
             }
+        }
+
+        private static async Task<string> GetTokenForDeviceIdentity(DeviceIdentity deviceIdentity, IEnumerable<string> scopes)
+        {
+            var client = ConfidentialClientApplicationBuilder.Create(deviceIdentity.AppId)
+                .WithTenantId(deviceIdentity.TenantId)
+                .WithClientSecret(deviceIdentity.ClientSecret)
+                .Build();
+            var token = await client.AcquireTokenForClient(scopes).ExecuteAsync();
+            return token.AccessToken;
         }
 
         private class DeviceIdentity
