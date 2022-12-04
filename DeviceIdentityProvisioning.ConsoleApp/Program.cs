@@ -134,6 +134,12 @@ namespace DeviceIdentityProvisioning.ConsoleApp
             // Create the MSAL confidential client application which has permissions to register device identities,
             // and is also an owner of the target API so it can perform the required admin consent (without being a
             // directory admin or otherwise having high-privilege permissions).
+            // This means:
+            // - The provisioning app must have "Application.ReadWrite.OwnedBy" permissions (not more), so that it
+            //   can register the device identities (apps).
+            // - The provisioning app also needs to be set as an owner of the target API, so that it can grant the
+            //   admin consent on the target API for the client device identity without needing additional directory
+            //   permissions.
             var client = ConfidentialClientApplicationBuilder.Create(deviceIdentityProvisioningAppId)
                 .WithClientSecret(deviceIdentityProvisioningAppSecret)
                 .WithTenantId(tenantId)
