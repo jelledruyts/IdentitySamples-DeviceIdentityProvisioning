@@ -64,7 +64,7 @@ namespace DeviceIdentityProvisioning.WebApp
             return RedirectToPage();
         }
 
-        private async Task<DeviceIdentity> CreateDeviceIdentityAsync(IGraphServiceClient graphService, string displayName, string description)
+        private async Task<DeviceIdentity> CreateDeviceIdentityAsync(GraphServiceClient graphService, string displayName, string description)
         {
             // Get information about the customer tenant.
             var currentOrganization = (await graphService.Organization.Request().GetAsync()).Single();

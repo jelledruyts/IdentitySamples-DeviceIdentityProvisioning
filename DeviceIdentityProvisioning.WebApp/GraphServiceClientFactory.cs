@@ -2,15 +2,14 @@ using System.Linq;
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Threading.Tasks;
+using Azure.Identity;
 using Microsoft.Graph;
-using Microsoft.Graph.Auth;
-using Microsoft.Identity.Client;
 
 namespace DeviceIdentityProvisioning.WebApp
 {
     public static class GraphServiceClientFactory
     {
-        public static IGraphServiceClient GetForUserIdentity(ClaimsPrincipal user)
+        public static GraphServiceClient GetForUserIdentity(ClaimsPrincipal user)
         {
             // Create an instance of the Graph Service Client to access the Microsoft Graph API.
             // In real world scenarios, this would use MSAL to fetch the access token based on the currently
@@ -28,13 +27,10 @@ namespace DeviceIdentityProvisioning.WebApp
             return new GraphServiceClient(authenticationProvider);
         }
 
-        public static IGraphServiceClient GetForDeviceIdentity(DeviceIdentity deviceIdentity)
+        public static GraphServiceClient GetForDeviceIdentity(DeviceIdentity deviceIdentity)
         {
-            var client = ConfidentialClientApplicationBuilder.Create(deviceIdentity.AppId)
-                .WithTenantId(deviceIdentity.TenantId)
-                .WithClientSecret(deviceIdentity.ClientSecret)
-                .Build();
-            return new GraphServiceClient(new ClientCredentialProvider(client));
+            var clientSecretCredential = new ClientSecretCredential(deviceIdentity.TenantId, deviceIdentity.AppId, deviceIdentity.ClientSecret);
+            return new GraphServiceClient(clientSecretCredential);
         }
     }
 }
