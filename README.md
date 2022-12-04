@@ -63,6 +63,8 @@ To run this sample successfully (using the console app only), complete the follo
   - For the target API, also store the client id, app role id and the full scope (for example, `https://mytenant.onmicrosoft.com/MyTargetApi/.default`).
 - Run the console application.
 
+To automate the creation of the provisioning app for this scenario, you can run the following PowerShell script.
+
 ```powershell
 # Configure variables for your environment.
 $TenantId = "<tenant-id>"

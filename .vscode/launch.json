@@ -31,7 +31,7 @@
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build",
-            "program": "${workspaceFolder}/DeviceIdentityProvisioning.ConsoleApp/bin/Debug/netcoreapp3.1/DeviceIdentityProvisioning.ConsoleApp.dll",
+            "program": "${workspaceFolder}/DeviceIdentityProvisioning.ConsoleApp/bin/Debug/net7.0/DeviceIdentityProvisioning.ConsoleApp.dll",
             "args": [],
             "cwd": "${workspaceFolder}",
             "console": "externalTerminal",

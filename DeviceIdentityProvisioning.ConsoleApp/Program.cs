@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Azure.Identity;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Graph;
-using Microsoft.Graph.Auth;
 using Microsoft.Identity.Client;
 
 namespace DeviceIdentityProvisioning.ConsoleApp
@@ -23,6 +23,7 @@ namespace DeviceIdentityProvisioning.ConsoleApp
                 .AddCommandLine(args)
                 .Build();
 
+            var tenantId = configuration.GetValue<string>("AzureAd:TenantId");
             var deviceIdentityProvisioningAppId = configuration.GetValue<string>("AzureAd:ClientId");
             var lastCreatedDeviceIdentity = default(DeviceIdentity);
             while (true)
@@ -46,7 +47,7 @@ namespace DeviceIdentityProvisioning.ConsoleApp
                     }
                     else if (string.Equals(choice, "B", StringComparison.InvariantCultureIgnoreCase))
                     {
-                        lastCreatedDeviceIdentity = await CreateDeviceIdentityInCustomerTenantAsync(deviceIdentityProvisioningAppId);
+                        lastCreatedDeviceIdentity = await CreateDeviceIdentityInCustomerTenantAsync(tenantId, deviceIdentityProvisioningAppId);
                     }
                     else if (string.Equals(choice, "C", StringComparison.InvariantCultureIgnoreCase))
                     {
@@ -58,7 +59,6 @@ namespace DeviceIdentityProvisioning.ConsoleApp
                     }
                     else if (string.Equals(choice, "D", StringComparison.InvariantCultureIgnoreCase))
                     {
-                        var tenantId = configuration.GetValue<string>("AzureAd:TenantId");
                         var deviceIdentityProvisioningAppSecret = configuration.GetValue<string>("AzureAd:ClientSecret");
                         var targetApiAppId = configuration.GetValue<string>("TargetApi:ClientId");
                         var targetApiRoleId = configuration.GetValue<string>("TargetApi:RoleId");
@@ -86,22 +86,23 @@ namespace DeviceIdentityProvisioning.ConsoleApp
             Console.WriteLine(adminConsentUrl);
         }
 
-        private static async Task<DeviceIdentity> CreateDeviceIdentityInCustomerTenantAsync(string deviceIdentityProvisioningAppId)
+        private static async Task<DeviceIdentity> CreateDeviceIdentityInCustomerTenantAsync(string tenantId, string deviceIdentityProvisioningAppId)
         {
-            // Create the MSAL public client application to allow the customer tenant administrator to sign in.
-            // https://github.com/AzureAD/microsoft-authentication-library-for-dotnet/wiki/System-Browser-on-.Net-Core
-            var client = PublicClientApplicationBuilder.Create(deviceIdentityProvisioningAppId)
-                .WithRedirectUri("http://localhost") // Required for MSAL
-                .WithAuthority(AadAuthorityAudience.AzureAdMultipleOrgs) // For multi-tenant applications (excluding consumer accounts)
-                .Build();
-
-            // Create the Graph Service client with an interactive authentication provider that uses the MSAL public client application.
+            // Create the Graph Service client with an interactive authentication provider.
             // Creating an Application or Service Principal using Delegated Permissions requires Application.ReadWrite.All, Directory.AccessAsUser.All (both require admin consent in the target tenant):
             // - https://docs.microsoft.com/en-us/graph/api/application-post-applications?view=graph-rest-1.0&tabs=http
             // - https://docs.microsoft.com/en-us/graph/api/serviceprincipal-post-serviceprincipals?view=graph-rest-1.0&tabs=http)
             // Note that these are the required permissions to create the device identity in the target tenant, which is unrelated from the final permissions the device will get.
             var scopes = new[] { "Application.ReadWrite.All", "Directory.AccessAsUser.All" };
-            var graphService = new GraphServiceClient(new InteractiveAuthenticationProvider(client, scopes, Microsoft.Identity.Client.Prompt.SelectAccount));
+            var options = new InteractiveBrowserCredentialOptions
+            {
+                TenantId = tenantId,
+                ClientId = deviceIdentityProvisioningAppId,
+                // MUST be http://localhost or http://localhost:PORT
+                // See https://github.com/AzureAD/microsoft-authentication-library-for-dotnet/wiki/System-Browser-on-.Net-Core
+                RedirectUri = new Uri("http://localhost")
+            };
+            var graphService = new GraphServiceClient(new InteractiveBrowserCredential(options), scopes);
 
             // Get information about the customer tenant.
             var currentOrganization = (await graphService.Organization.Request().GetAsync()).Single();
@@ -131,7 +132,7 @@ namespace DeviceIdentityProvisioning.ConsoleApp
 
         private static async Task CreateDeviceIdentityFromProvisioningAppAsync(string tenantId, string deviceIdentityProvisioningAppId, string deviceIdentityProvisioningAppSecret, string targetApiAppId, string targetApiRoleId, string targetApiScope)
         {
-            // Create the MSAL confidential client application which has permissions to register device identities,
+            // Create the Graph client using the provisioning app identity which has permissions to register device identities,
             // and is also an owner of the target API so it can perform the required admin consent (without being a
             // directory admin or otherwise having high-privilege permissions).
             // This means:
@@ -140,11 +141,8 @@ namespace DeviceIdentityProvisioning.ConsoleApp
             // - The provisioning app also needs to be set as an owner of the target API, so that it can grant the
             //   admin consent on the target API for the client device identity without needing additional directory
             //   permissions.
-            var client = ConfidentialClientApplicationBuilder.Create(deviceIdentityProvisioningAppId)
-                .WithClientSecret(deviceIdentityProvisioningAppSecret)
-                .WithTenantId(tenantId)
-                .Build();
-            var graphService = new GraphServiceClient(new ClientCredentialProvider(client));
+            var clientSecretCredential = new ClientSecretCredential(tenantId, deviceIdentityProvisioningAppId, deviceIdentityProvisioningAppSecret);
+            var graphService = new GraphServiceClient(clientSecretCredential);
 
             // Specify which permissions the device will ultimately need.
             // In this case we have to use a target API which we own (which excludes 3rd party multi-tenant apps
@@ -233,11 +231,8 @@ namespace DeviceIdentityProvisioning.ConsoleApp
         {
             try
             {
-                var client = ConfidentialClientApplicationBuilder.Create(deviceIdentity.AppId)
-                    .WithTenantId(deviceIdentity.TenantId)
-                    .WithClientSecret(deviceIdentity.ClientSecret)
-                    .Build();
-                var graphService = new GraphServiceClient(new ClientCredentialProvider(client));
+                var clientSecretCredential = new ClientSecretCredential(deviceIdentity.TenantId, deviceIdentity.AppId, deviceIdentity.ClientSecret);
+                var graphService = new GraphServiceClient(clientSecretCredential);
                 var users = await graphService.Users.Request().GetAsync();
                 return $"Successfully retrieved {users.Count} users from the Graph API using the identity of device \"{deviceIdentity.DisplayName}\" in tenant \"{deviceIdentity.TenantId}\", which demonstrates that the device is able to access the Graph API using its provisioned identity.";
             }
